@@ -84,7 +84,7 @@ class WP_URL2SNAPSHOT {
 
 		foreach ( $posts as $post ) {
 			setup_postdata($post);
-			static::debug(" processing {$post->ID}");
+			static::debug(" processing post #{$post->ID}");
 			$content = static::get_the_content($post);
 			$urls = static::extract_urls($content);
 			foreach ($urls as $url) {
@@ -97,34 +97,105 @@ class WP_URL2SNAPSHOT {
 				if (preg_match("/^https?:\/\/{$domain}.*$/", $url)) {
 					continue;
 				}
+				elseif (preg_match('/^https?:\/\/127\.0\.0\.1.*$/', $url )) {
+					continue;
+				}
 
 				static::debug("  found url {$url}" );
 
 				if (!$this->hash_exists($url)) {
-					static::debug("  this URL is not yet snapshotted, doing it now" );
+
+					static::debug("   not yet snapshotted, doing it now" );
 					$status = true;
 					$content = $this->get_url($url, $status);
 
 					if (($content !== false && $status === true) || $status == 'e_nottext' ) { // all clear or not text
 						$s = $this->snapshot( $url, $content );
 					}
+					elseif ( $status == 'e_not200' ) {
+
+						// dead content, try archive.org
+						if ($content == '404') {
+							$acontent = $this->try_archive($url);
+							if (!empty($acontent))
+								$s = $this->snapshot( $url, $acontent );
+						}
+
+					}
+				}
+				else {
+					static::debug("   is already done" );
 				}
 			}
 		}
 		wp_reset_postdata();
-
-		//$args = array(
-			//'hierarchical' => 0,
-			//'post_type' => 'page',
-			//'post_status' => 'publish'
-		//);
-		//$pages = get_pages($args);
-
-
-		//$posts = $wpdb->get_results( "SELECT ID, post_content, post_modified_gmt FROM $wpdb->posts WHERE post_status = 'publish' AND post_password = '' ORDER BY post_type DESC, post_modified DESC LIMIT ". ASXS_LIMIT ." OFFSET ". ($partNumber-1) * ASXS_LIMIT);
-
 	}
 
+	/**
+	 *
+	 */
+	private function try_archive ( &$url ) {
+
+		static::debug('     trying to get archive.org version instead');
+		$astatus = true;
+		$wstatus = true;
+		$aurl = 'https://archive.org/wayback/available?url=' . $url;
+
+		$archive = $this->get_url($aurl, $astatus);
+
+		if (($archive == false || $astatus != true) ) {
+				static::debug("     archive.org version failed");
+				return false;
+		}
+
+		try {
+			$json = json_decode($archive);
+		}
+		catch (Exception $e) {
+			static::debug("     something went wrong: " . $e->getMessage());
+		}
+
+		if (!isset($json->archived_snapshots)) {
+			static::debug("     archive.org version not found");
+			return false;
+		}
+
+		if (!isset($json->archived_snapshots->closest)) {
+			static::debug("     closest archive.org version not found");
+			return false;
+		}
+
+		if (!isset($json->archived_snapshots->closest->available)) {
+			static::debug("     closest available archive.org version not found");
+			return false;
+		}
+
+		if ($json->archived_snapshots->closest->available != 'true') {
+			static::debug("     closest archive.org version not available");
+			return false;
+		}
+
+		if ($json->archived_snapshots->closest->status != 200 ) {
+			static::debug("     closest archive.org version not 200");
+			return false;
+		}
+
+		$wurl = $json->archived_snapshots->closest->url;
+		$wurl = str_replace( $json->archived_snapshots->closest->timestamp, $json->archived_snapshots->closest->timestamp . 'id_', $wurl );
+		static::debug("     trying {$wurl}");
+
+		$wget = $this->get_url($wurl, $wstatus);
+		if (($wget !== false && $wstatus === true) ) {
+			static::debug("     success! Found archive.org version at {$wurl}");
+			return $wget;
+		}
+
+		return false;
+	}
+
+	/**
+	 *
+	 */
 	private function hash_exists ( &$url ) {
 		if (empty($url))
 			return false;
@@ -183,13 +254,13 @@ class WP_URL2SNAPSHOT {
 		}
 
 		if ($response['response']['code'] != 200) {
-			static::debug("   Response was {$response['headers']['response']['code']}.");
+			static::debug("   Response was {$response['response']['code']}.");
 			$status = 'e_not200';
-			return false;
+			return $response['response']['code'];
 		}
 
 		$mime_ok = false;
-		$mimes = array ('text/html', 'application/json', 'text/plain');
+		$mimes = array ('text/', 'application/json', 'application/javascript');
 		foreach ( $mimes as $mime ) {
 			if (stristr( $response['headers']['content-type'], $mime)) {
 				$mime_ok = true;
@@ -220,7 +291,6 @@ class WP_URL2SNAPSHOT {
 		global $wpdb;
 		$dbname = "{$wpdb->prefix}urlsnapshots";
 		$r = false;
-		$url =
 
 		$q = $wpdb->prepare( "INSERT INTO `{$dbname}` (`url_hash`,`url_date`,`url_url`,`url_content`) VALUES (UNHEX(SHA1('{$url}')), NOW(), '%s', '%s' );", $url, $content );
 
