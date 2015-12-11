@@ -45,6 +45,13 @@ class WP_URL2SNAPSHOT {
 
 		// register the action for the cron hook
 		add_action( __CLASS__, array( &$this, 'worker' ) );
+
+		$statuses = array ('new', 'draft', 'auto-draft', 'pending', 'private', 'future' );
+		foreach ($statuses as $status) {
+			add_action("{$status}_to_publish", array( &$this,'standalone' ));
+		}
+		add_action( 'publish_future_post', array( &$this,'standalone' ));
+
 	}
 
 	public static function init() {
@@ -84,52 +91,68 @@ class WP_URL2SNAPSHOT {
 
 		foreach ( $posts as $post ) {
 			setup_postdata($post);
-			static::debug(" processing post #{$post->ID}");
-			$content = static::get_the_content($post);
-			$urls = static::extract_urls($content);
-			foreach ($urls as $url) {
-				$url = esc_url_raw($url);
-				if (empty($url)) {
-					continue;
-				}
-
-				$domain = parse_url(get_bloginfo('url'), PHP_URL_HOST);
-				if (preg_match("/^https?:\/\/{$domain}.*$/", $url)) {
-					continue;
-				}
-				elseif (preg_match('/^https?:\/\/127\.0\.0\.1.*$/', $url )) {
-					continue;
-				}
-
-				static::debug("  found url {$url}" );
-
-				if (!$this->hash_exists($url)) {
-
-					static::debug("   not yet snapshotted, doing it now" );
-					$status = true;
-					$content = $this->get_url($url, $status);
-
-					if (($content !== false && $status === true) || $status == 'e_nottext' ) { // all clear or not text
-						$s = $this->snapshot( $url, $content );
-					}
-					elseif ( $status == 'e_not200' ) {
-
-						// dead content, try archive.org
-						if ($content == '404') {
-							$acontent = $this->try_archive($url);
-							if (!empty($acontent))
-								$s = $this->snapshot( $url, $acontent );
-						}
-
-					}
-				}
-				else {
-					static::debug("   is already done" );
-				}
-			}
+			$this->standalone($post);
 		}
 		wp_reset_postdata();
+
+		static::debug("worker finished" );
 	}
+
+
+	public function standalone ( $post ) {
+		if (!static::is_post($post))
+			return false;
+
+		static::debug('standalone started');
+
+		static::debug(" processing post #{$post->ID}");
+		$content = static::get_the_content($post);
+		$urls = static::extract_urls($content);
+		foreach ($urls as $url) {
+			$url = esc_url_raw($url);
+			if (empty($url)) {
+				return false;
+			}
+
+			$domain = parse_url(get_bloginfo('url'), PHP_URL_HOST);
+			if (preg_match("/^https?:\/\/{$domain}.*$/", $url)) {
+				return false;
+			}
+			elseif (preg_match('/^https?:\/\/127\.0\.0\.1.*$/', $url )) {
+				return false;
+			}
+
+			static::debug("  found url {$url}" );
+
+			if (!$this->hash_exists($url)) {
+
+				static::debug("   not yet snapshotted, doing it now" );
+				$status = true;
+				$content = $this->get_url($url, $status);
+
+				if (($content !== false && $status === true) || $status == 'e_nottext' ) { // all clear or not text
+					$s = $this->snapshot( $url, $content );
+				}
+				elseif ( $status == 'e_not200' ) {
+
+					// dead content, try archive.org
+					if ($content == '404') {
+						$acontent = $this->try_archive($url);
+						if (!empty($acontent))
+							$s = $this->snapshot( $url, $acontent );
+					}
+
+				}
+			}
+			else {
+				static::debug("   is already done" );
+			}
+		}
+
+		static::debug("standalone finished" );
+		return true;
+	}
+
 
 	/**
 	 *
