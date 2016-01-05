@@ -3,7 +3,7 @@
 Plugin Name: wp-url2snapshot
 Plugin URI: https://github.com/petermolnar/wp-url2snapshot
 Description: reversible automatic short slug based on post pubdate epoch for WordPress
-Version: 0.2
+Version: 0.1
 Author: Peter Molnar <hello@petermolnar.eu>
 Author URI: http://petermolnar.eu/
 License: GPLv3
@@ -45,12 +45,13 @@ class WP_URL2SNAPSHOT {
 
 		// register the action for the cron hook
 		add_action( __CLASS__, array( &$this, 'worker' ) );
+		add_action( __CLASS__ . '_single', array( &$this, 'standalone' ) );
 
 		$statuses = array ('new', 'draft', 'auto-draft', 'pending', 'private', 'future' );
 		foreach ($statuses as $status) {
-			add_action("{$status}_to_publish", array( &$this,'standalone' ));
+			add_action("{$status}_to_publish", array( &$this,'standalone_event' ));
 		}
-		add_action( 'publish_future_post', array( &$this,'standalone' ));
+		add_action( 'publish_future_post', array( &$this,'standalone_event' ));
 
 	}
 
@@ -64,7 +65,9 @@ class WP_URL2SNAPSHOT {
 	 * activation hook function
 	 */
 	public function plugin_activate() {
-		static::debug('activating');
+		if ( version_compare( phpversion(), 5.3, '<' ) ) {
+			die( 'The minimum PHP version required for this plugin is 5.3' );
+		}
 		$this->init_db();
 	}
 
@@ -77,7 +80,13 @@ class WP_URL2SNAPSHOT {
 		wp_clear_scheduled_hook( __CLASS__ );
 	}
 
+	public function standalone_event ( $post ) {
+		wp_schedule_single_event( time() + 2*60, __CLASS__ . '_single' , $post );
+	}
 
+	/**
+	 *
+	 */
 	public function worker () {
 		static::debug('worker started');
 		global $wpdb;
@@ -128,20 +137,21 @@ class WP_URL2SNAPSHOT {
 
 				static::debug("   not yet snapshotted, doing it now" );
 				$status = true;
+
+				// status is passed by reference !!!
 				$content = $this->get_url($url, $status);
 
-				if (($content !== false && $status === true) || $status == 'e_nottext' ) { // all clear or not text
+				if (($content !== false && $status === true) || $status == 'e_nottext' ) {
+					// all clear or not text
+					// not text is stored, otherwise it won't be skipped and will be retried
 					$s = $this->snapshot( $url, $content );
 				}
-				elseif ( $status == 'e_not200' ) {
-
+				elseif ( $status == 'try_archive' ) {
 					// dead content, try archive.org
-					if ($content == '404') {
-						$acontent = $this->try_archive($url);
-						if (!empty($acontent))
-							$s = $this->snapshot( $url, $acontent );
+					$acontent = $this->try_archive($url);
+					if (!empty($acontent)) {
+						$s = $this->snapshot( $url, $acontent );
 					}
-
 				}
 			}
 			else {
@@ -260,7 +270,13 @@ class WP_URL2SNAPSHOT {
 
 		if ( is_wp_error( $response ) ) {
 			static::debug("   retrieving URL ${url} failed: " . $response->get_error_message());
-			$status = 'e_notfound';
+
+			if ( $response->get_error_message() == 'name lookup timed out' ) {
+				$status = 'try_archive';
+			}
+			else {
+				$status = 'e_error';
+			}
 			return false;
 		}
 
@@ -278,7 +294,12 @@ class WP_URL2SNAPSHOT {
 
 		if ($response['response']['code'] != 200) {
 			static::debug("   Response was {$response['response']['code']}.");
-			$status = 'e_not200';
+			if ( $response['response']['code'] == 404 ) {
+				$status = 'try_archive';
+			}
+			else {
+				$status = 'e_not200';
+			}
 			return $response['response']['code'];
 		}
 

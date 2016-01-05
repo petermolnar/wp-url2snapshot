@@ -1,6 +1,6 @@
 === wp-url2snapshot ===
 Contributors: cadeyrn
-Donate link:
+Donate link: https://paypal.me/petermolnar/3
 Tags: linkrot, archive, hyperlink, url
 Requires at least: 3.0
 Tested up to: 4.4
