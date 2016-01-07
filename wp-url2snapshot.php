@@ -3,7 +3,7 @@
 Plugin Name: wp-url2snapshot
 Plugin URI: https://github.com/petermolnar/wp-url2snapshot
 Description: reversible automatic short slug based on post pubdate epoch for WordPress
-Version: 0.1
+Version: 0.2
 Author: Peter Molnar <hello@petermolnar.eu>
 Author URI: http://petermolnar.eu/
 License: GPLv3
@@ -32,6 +32,8 @@ class WP_URL2SNAPSHOT {
 	const expire = 10;
 	const timeout = 5;
 	const redirection = 5;
+
+	private $looping = 0;
 
 	public function __construct() {
 
@@ -119,39 +121,31 @@ class WP_URL2SNAPSHOT {
 		$urls = static::extract_urls($content);
 		foreach ($urls as $url) {
 			$url = esc_url_raw($url);
-			if (empty($url)) {
-				return false;
-			}
+
+			if (empty($url))
+				continue;
 
 			$domain = parse_url(get_bloginfo('url'), PHP_URL_HOST);
-			if (preg_match("/^https?:\/\/{$domain}.*$/", $url)) {
-				return false;
-			}
-			elseif (preg_match('/^https?:\/\/127\.0\.0\.1.*$/', $url )) {
-				return false;
-			}
+
+			if (preg_match("/^https?:\/\/{$domain}.*$/", $url))
+				continue;
+
+			if (preg_match('/^https?:\/\/127\.0\.0\.1.*$/', $url ))
+				continue;
 
 			static::debug("  found url {$url}" );
 
 			if (!$this->hash_exists($url)) {
 
 				static::debug("   not yet snapshotted, doing it now" );
-				$status = true;
+				$r = $this->get_url($url);
 
-				// status is passed by reference !!!
-				$content = $this->get_url($url, $status);
-
-				if (($content !== false && $status === true) || $status == 'e_nottext' ) {
-					// all clear or not text
-					// not text is stored, otherwise it won't be skipped and will be retried
-					$s = $this->snapshot( $url, $content );
+				if (!empty($r) && is_array($r) && isset($r['headers']) && isset($r['body'])) {
+					$this->snapshot( $url, $r );
 				}
-				elseif ( $status == 'try_archive' ) {
-					// dead content, try archive.org
-					$acontent = $this->try_archive($url);
-					if (!empty($acontent)) {
-						$s = $this->snapshot( $url, $acontent );
-					}
+				else {
+					static::debug("   getting url failed :(" );
+					continue;
 				}
 			}
 			else {
@@ -169,20 +163,19 @@ class WP_URL2SNAPSHOT {
 	 */
 	private function try_archive ( &$url ) {
 
-		static::debug('     trying to get archive.org version instead');
-		$astatus = true;
-		$wstatus = true;
+		static::debug('     trying to get archive.org version');
 		$aurl = 'https://archive.org/wayback/available?url=' . $url;
 
-		$archive = $this->get_url($aurl, $astatus);
+		$archive = $this->get_url($aurl);
 
-		if (($archive == false || $astatus != true) ) {
-				static::debug("     archive.org version failed");
-				return false;
-		}
+		if (($archive === false) )
+			return false;
+
+		if (!is_array($archive) || !isset($archive['headers']) || !isset($archive['body']))
+			return false;
 
 		try {
-			$json = json_decode($archive);
+			$json = json_decode($archive['body']);
 		}
 		catch (Exception $e) {
 			static::debug("     something went wrong: " . $e->getMessage());
@@ -217,13 +210,7 @@ class WP_URL2SNAPSHOT {
 		$wurl = str_replace( $json->archived_snapshots->closest->timestamp, $json->archived_snapshots->closest->timestamp . 'id_', $wurl );
 		static::debug("     trying {$wurl}");
 
-		$wget = $this->get_url($wurl, $wstatus);
-		if (($wget !== false && $wstatus === true) ) {
-			static::debug("     success! Found archive.org version at {$wurl}");
-			return $wget;
-		}
-
-		return false;
+		return $this->get_url($wurl);
 	}
 
 	/**
@@ -255,7 +242,8 @@ class WP_URL2SNAPSHOT {
 	/**
 	 *
 	 */
-	private static function get_url ( &$url, &$status ) {
+	private function get_url ( &$url ) {
+
 		if (empty($url))
 			return false;
 
@@ -270,82 +258,79 @@ class WP_URL2SNAPSHOT {
 
 		if ( is_wp_error( $response ) ) {
 			static::debug("   retrieving URL ${url} failed: " . $response->get_error_message());
-
-			if ( $response->get_error_message() == 'name lookup timed out' ) {
-				$status = 'try_archive';
-			}
-			else {
-				$status = 'e_error';
-			}
 			return false;
 		}
 
 		if (!isset($response['headers']) || empty($response['headers']) || !isset($response['response']) || empty($response['response']) || !isset($response['response']['code']) || empty($response['response']['code'])) {
 			static::debug("   WHAT? No or empty headers? Get out of here.");
-			$status = 'e_noresponseheaders';
 			return false;
 		}
 
 		if (!isset($response['headers']['content-type']) || empty($response['headers']['content-type'])) {
 			static::debug("   Empty content type, I don't want this link");
-			$status = 'e_nomime';
 			return false;
 		}
 
-		if ($response['response']['code'] != 200) {
-			static::debug("   Response was {$response['response']['code']}.");
-			if ( $response['response']['code'] == 404 ) {
-				$status = 'try_archive';
+		// 400s: client error. Yeah, sure.
+		if ($response['response']['code'] < 500 && $response['response']['code'] >= 400 ) {
+			return $this->try_archive($url);
+		}
+		// try next time
+		elseif ($response['response']['code'] >= 500 ) {
+			return false;
+		}
+		// redirects, follow redirect, but keep counting to avoid infinity
+		elseif ($response['response']['code'] < 400 && $response['response']['code'] >= 300 && isset($response['headers']['location']) && !empty($response['headers']['location'])) {
+			if ($this->looping < 6) {
+				$this->looping = $this->looping + 1;
+				return $this->get_url($response['headers']['location']);
 			}
 			else {
-				$status = 'e_not200';
-			}
-			return $response['response']['code'];
-		}
-
-		$mime_ok = false;
-		$mimes = array ('text/', 'application/json', 'application/javascript');
-		foreach ( $mimes as $mime ) {
-			if (stristr( $response['headers']['content-type'], $mime)) {
-				$mime_ok = true;
+				$this->looping = 0;
+				return false;
 			}
 		}
+		elseif ($response['response']['code'] == 200) {
+			$mime_ok = false;
+			$mimes = array ('text/', 'application/json', 'application/javascript');
+			foreach ( $mimes as $mime ) {
+				if (stristr( $response['headers']['content-type'], $mime)) {
+					$mime_ok = true;
+				}
+			}
 
-		if (!$mime_ok) {
-			static::debug("    {$response['headers']['content-type']} is probably not text");
-			$status = 'e_nottext';
+			if (!$mime_ok) {
+				static::debug("    {$response['headers']['content-type']} is not text, we don't want it.");
+				return true;
+			}
+		}
+		else {
+			static::debug("   Response was {$response['headers']['code']}. This is not yet handled.");
 			return false;
 		}
 
-		$contents = wp_remote_retrieve_body( $response );
-
-		if (is_wp_error($contents)) {
-			static::debug("    retrieving contents of URL ${url} failed: " . $response->get_error_message());
-			$status = 'e_content';
-			return false;
-		}
-
-		return $contents;
+		$this->looping = 0;
+		return $response;
 	}
 
 	/**
 	 *
 	 */
-	private function snapshot ( &$url, &$content ) {
+	private function snapshot ( &$url, &$r ) {
 		global $wpdb;
 		$dbname = "{$wpdb->prefix}urlsnapshots";
-		$r = false;
+		$req = false;
 
-		$q = $wpdb->prepare( "INSERT INTO `{$dbname}` (`url_hash`,`url_date`,`url_url`,`url_content`) VALUES (UNHEX(SHA1('{$url}')), NOW(), '%s', '%s' );", $url, $content );
+		$q = $wpdb->prepare( "INSERT INTO `{$dbname}` (`url_hash`,`url_date`,`url_url`, `url_response`,`url_headers`, `url_cookies`,`url_body`) VALUES (UNHEX(SHA1('{$url}')), NOW(), '%s', '%s', '%s', '%s', '%s' );", $url, json_encode($r['response']), json_encode($r['headers']), json_encode($r['cookies']), $r['body'] );
 
 		try {
-			$r = $wpdb->query( $q );
+			$req = $wpdb->query( $q );
 		}
 		catch (Exception $e) {
 			static::debug('Something went wrong: ' . $e->getMessage());
 		}
 
-		return $r;
+		return $req;
 	}
 
 	/**
@@ -372,7 +357,11 @@ class WP_URL2SNAPSHOT {
 		`url_hash` binary(20),
 		`url_date` datetime NOT NULL DEFAULT NOW(),
 		`url_url` text COLLATE {$wpdb->collate},
-		`url_content` longtext COLLATE {$wpdb->collate},
+		`url_response` text COLLATE {$wpdb->collate},
+		`url_headers` text COLLATE {$wpdb->collate},
+		`url_cookies` text COLLATE {$wpdb->collate},
+		`url_body` longtext COLLATE {$wpdb->collate},
+
 		PRIMARY KEY (`url_hash`)
 		) {$charset_collate};";
 
