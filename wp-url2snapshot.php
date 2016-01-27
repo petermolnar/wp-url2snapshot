@@ -96,7 +96,7 @@ class WP_URL2SNAPSHOT {
 		$args = array(
 			'posts_per_page' => -1,
 			'post_type' => 'post',
-			'post_status' => 'publish',
+			'post_status' => 'any',
 		);
 		$posts = get_posts( $args );
 
