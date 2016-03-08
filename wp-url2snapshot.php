@@ -3,7 +3,7 @@
 Plugin Name: wp-url2snapshot
 Plugin URI: https://github.com/petermolnar/wp-url2snapshot
 Description: reversible automatic short slug based on post pubdate epoch for WordPress
-Version: 0.2.1
+Version: 0.2.2
 Author: Peter Molnar <hello@petermolnar.eu>
 Author URI: http://petermolnar.eu/
 License: GPLv3
@@ -77,7 +77,7 @@ class WP_URL2SNAPSHOT {
 	 * deactivation hook function; clears schedules
 	 */
 	public function plugin_deactivate () {
-		static::debug('deactivating');
+		static::debug('deactivating', 4);
 		wp_unschedule_event( time(), __CLASS__ );
 		wp_clear_scheduled_hook( __CLASS__ );
 	}
@@ -90,7 +90,7 @@ class WP_URL2SNAPSHOT {
 	 *
 	 */
 	public function worker () {
-		static::debug('worker started');
+		static::debug('worker started', 7);
 		global $wpdb;
 
 		$args = array(
@@ -106,7 +106,7 @@ class WP_URL2SNAPSHOT {
 		}
 		wp_reset_postdata();
 
-		static::debug("worker finished" );
+		static::debug('worker finished', 7);
 	}
 
 
@@ -114,9 +114,9 @@ class WP_URL2SNAPSHOT {
 		if (!static::is_post($post))
 			return false;
 
-		static::debug('standalone started');
+		static::debug('standalone started', 7);
 
-		static::debug(" processing post #{$post->ID}");
+		static::debug(" processing post #{$post->ID}", 6);
 		$content = static::get_the_content($post);
 		$urls = static::extract_urls($content);
 		$urls = apply_filters ( 'wp_url2snapshot_urls', $urls, $post );
@@ -135,27 +135,27 @@ class WP_URL2SNAPSHOT {
 			if (preg_match('/^https?:\/\/127\.0\.0\.1.*$/', $url ))
 				continue;
 
-			static::debug("  found url {$url}" );
+			static::debug("  found url {$url}", 6);
 
 			if (!$this->hash_exists($url)) {
 
-				static::debug("   not yet snapshotted, doing it now" );
+				static::debug("   not yet snapshotted, doing it now", 7);
 				$r = $this->get_url($url);
 
 				if (!empty($r) && is_array($r) && isset($r['headers']) && isset($r['body'])) {
 					$this->snapshot( $url, $r );
 				}
 				else {
-					static::debug("   getting url failed :(" );
+					static::debug("   getting url failed :(", 7);
 					continue;
 				}
 			}
 			else {
-				static::debug("   is already done" );
+				static::debug("   is already done", 7);
 			}
 		}
 
-		static::debug("standalone finished" );
+		static::debug("standalone finished", 7);
 		return true;
 	}
 
@@ -165,7 +165,7 @@ class WP_URL2SNAPSHOT {
 	 */
 	private function try_archive ( &$url ) {
 
-		static::debug('     trying to get archive.org version');
+		static::debug('     trying to get archive.org version', 7);
 		$aurl = 'https://archive.org/wayback/available?url=' . $url;
 
 		$archive = $this->get_url($aurl);
@@ -180,37 +180,37 @@ class WP_URL2SNAPSHOT {
 			$json = json_decode($archive['body']);
 		}
 		catch (Exception $e) {
-			static::debug("     something went wrong: " . $e->getMessage());
+			static::debug("     something went wrong: " . $e->getMessage(), 4);
 		}
 
 		if (!isset($json->archived_snapshots)) {
-			static::debug("     archive.org version not found");
+			static::debug("     archive.org version not found", 7);
 			return false;
 		}
 
 		if (!isset($json->archived_snapshots->closest)) {
-			static::debug("     closest archive.org version not found");
+			static::debug("     closest archive.org version not found", 7);
 			return false;
 		}
 
 		if (!isset($json->archived_snapshots->closest->available)) {
-			static::debug("     closest available archive.org version not found");
+			static::debug("     closest available archive.org version not found", 7);
 			return false;
 		}
 
 		if ($json->archived_snapshots->closest->available != 'true') {
-			static::debug("     closest archive.org version not available");
+			static::debug("     closest archive.org version not available", 7);
 			return false;
 		}
 
 		if ($json->archived_snapshots->closest->status != 200 ) {
-			static::debug("     closest archive.org version not 200");
+			static::debug("     closest archive.org version not 200", 7);
 			return false;
 		}
 
 		$wurl = $json->archived_snapshots->closest->url;
 		$wurl = str_replace( $json->archived_snapshots->closest->timestamp, $json->archived_snapshots->closest->timestamp . 'id_', $wurl );
-		static::debug("     trying {$wurl}");
+		static::debug("     trying {$wurl}", 7);
 
 		return $this->get_url($wurl);
 	}
@@ -232,7 +232,7 @@ class WP_URL2SNAPSHOT {
 			$q = $wpdb->get_row($db_command);
 		}
 		catch (Exception $e) {
-			static::debug('Something went wrong: ' . $e->getMessage());
+			static::debug('Something went wrong: ' . $e->getMessage(), 4);
 		}
 
 		if (!empty($q) && is_object($q) && isset($q->url_url) && !empty($q->url_url))
@@ -259,17 +259,17 @@ class WP_URL2SNAPSHOT {
 		$response = wp_remote_get( $url, $args );
 
 		if ( is_wp_error( $response ) ) {
-			static::debug("   retrieving URL ${url} failed: " . $response->get_error_message());
+			static::debug("   retrieving URL ${url} failed: " . $response->get_error_message(), 6);
 			return false;
 		}
 
 		if (!isset($response['headers']) || empty($response['headers']) || !isset($response['response']) || empty($response['response']) || !isset($response['response']['code']) || empty($response['response']['code'])) {
-			static::debug("   WHAT? No or empty headers? Get out of here.");
+			static::debug("   WHAT? No or empty headers? Get out of here.", 7);
 			return false;
 		}
 
 		if (!isset($response['headers']['content-type']) || empty($response['headers']['content-type'])) {
-			static::debug("   Empty content type, I don't want this link");
+			static::debug("   Empty content type, I don't want this link", 7);
 			return false;
 		}
 
@@ -302,12 +302,12 @@ class WP_URL2SNAPSHOT {
 			}
 
 			if (!$mime_ok) {
-				static::debug("    {$response['headers']['content-type']} is not text, we don't want it.");
+				static::debug("    {$response['headers']['content-type']} is not text, we don't want it.", 7);
 				return true;
 			}
 		}
 		else {
-			static::debug("   Response was {$response['headers']['code']}. This is not yet handled.");
+			static::debug("   Response was {$response['headers']['code']}. This is not yet handled.", 7);
 			return false;
 		}
 
@@ -329,7 +329,7 @@ class WP_URL2SNAPSHOT {
 			$req = $wpdb->query( $q );
 		}
 		catch (Exception $e) {
-			static::debug('Something went wrong: ' . $e->getMessage());
+			static::debug('Something went wrong: ' . $e->getMessage(), 4);
 		}
 
 		return $req;
@@ -367,12 +367,12 @@ class WP_URL2SNAPSHOT {
 		PRIMARY KEY (`url_hash`)
 		) {$charset_collate};";
 
-		static::debug("Initiating DB {$dbname}");
+		static::debug("Initiating DB {$dbname}", 4);
 		try {
 			$wpdb->query( $db_command );
 		}
 		catch (Exception $e) {
-			static::debug('Something went wrong: ' . $e->getMessage());
+			static::debug('Something went wrong: ' . $e->getMessage(), 4);
 		}
 
 	}
@@ -386,12 +386,12 @@ class WP_URL2SNAPSHOT {
 
 		$db_command = "DROP TABLE IF EXISTS `{$dbname}`;";
 
-		static::debug("Deleting DB {$dbname}");
+		static::debug("Deleting DB {$dbname}", 4);
 		try {
 			$wpdb->query( $db_command );
 		}
 		catch (Exception $e) {
-			static::debug('Something went wrong: ' . $e->getMessage());
+			static::debug('Something went wrong: ' . $e->getMessage(), 4);
 		}
 	}
 
@@ -458,7 +458,7 @@ class WP_URL2SNAPSHOT {
 		// in case WordPress debug log has a minimum level
 		if ( defined ( 'WP_DEBUG_LEVEL' ) ) {
 			$wp_level = $levels [ WP_DEBUG_LEVEL ];
-			if ( $level_ < $wp_level ) {
+			if ( $level_ > $wp_level ) {
 				return false;
 			}
 		}
